@@ -1,5 +1,6 @@
 import json
 import sys
+import yaml
 
 class Config:
     def __init__(self, **kwargs):

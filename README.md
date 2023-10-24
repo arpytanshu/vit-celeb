@@ -27,3 +27,15 @@ img_align_celeba/*.jpg
   month = {December},
   year = {2015} 
 }
+
+
+
+sanity run
+
+e:2 iter:400 avg train loss: 0.369140625
+P=0.787 R=0.718 F1=0.742 ACC=0.837, LOSS: 0.36328125
+e:2 iter:410 avg train loss: 0.36328125
+
+e:3 iter:400 avg train loss: 0.34375000
+test: P=0.786 R=0.726 F1=0.748 ACC=0.839, LOSS: 0.359375
+e:3 iter:410 avg train loss: 0.349609375
