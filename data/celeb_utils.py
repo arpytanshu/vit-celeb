@@ -14,8 +14,6 @@ from dataclasses import dataclass
 
 from common import progress_bar
 
-
-
 @dataclass
 class CelebMeta:
     """
@@ -71,8 +69,6 @@ class CelebDataset(Dataset):
         return len(self.file_list)
 
 
-
-
 def get_dataset(data_path, split='train'):
     """
     Get celebA pytorch dataset.
@@ -95,7 +91,10 @@ def get_dataset(data_path, split='train'):
     attrib_df = attributes_data['attributes']
     attrib_names = attributes_data['attrib_names']
     attrib_df = attrib_df[attrib_df.fname.isin(file_list)]
-    attrib_df[attrib_names] = attrib_df[attrib_names].apply(pd.to_numeric)
+
+    attrib_df.reset_index(inplace=True, drop=True)
+    for col in attrib_names:
+        attrib_df.loc[:, col] = attrib_df[col].apply(pd.to_numeric)
 
     prepend_base_path = lambda x: data_path / CelebMeta.images_pth / x
     file_list = list(map(prepend_base_path, attrib_df.fname.tolist()))
@@ -150,3 +149,18 @@ def get_normalization_params(data_path, use_test_split=True):
     var = (sq_sum / N) - torch.square(mean)
 
     return {'mean':mean, 'var':var, 'std':torch.sqrt(var)}
+
+def get_weights_for_loss(attrib_df):
+    '''
+    Computes per class weights to go along with BCEWITHLOGITSLOSS.
+    if a dataset contains 100 +ve & 300 -ve examples of a single class,
+        then pos_weight for the class should be equal to 300/100 = 3
+    '''
+    pos_weights = []
+    total_count = attrib_df.shape[0]
+    for col in attrib_df.columns[1:]:
+        pos_count = (attrib_df[col] == 1).sum()
+        neg_count = total_count - pos_count
+        pos_weight = neg_count / pos_count
+        pos_weights.append(pos_weight)
+    return pos_weights

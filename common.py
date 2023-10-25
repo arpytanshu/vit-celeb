@@ -53,7 +53,6 @@ class Config:
         return '\n'.join(s)
     
 
-
 def progress_bar(current, total, bar_length=50, text="Progress"):
     anitext = ['\\', '|', '/', '-']
     percent = float(current) / total
@@ -63,3 +62,4 @@ def progress_bar(current, total, bar_length=50, text="Progress"):
     text = '[' + anitext[(current % 4)] + '] ' + text
     sys.stdout.write("\r{0}: [{1}] {2}% {3}".format(text, arrow + spaces, int(round(percent * 100)), abs))
     sys.stdout.flush()
+

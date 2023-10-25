@@ -1,99 +1,318 @@
 
 #%%
-
-from data.celeb_utils import get_dataset
+import os
+import sys
+import logging
+import numpy as np
 from pathlib import Path    
-from torch.utils.data import DataLoader
-from model.vit import ViTConfig, ViTModel
+from typing import Union
+from time import perf_counter
+from datetime import datetime
+from dataclasses import dataclass
+
 import torch
 from torch.optim import AdamW
-import numpy as np
-from sklearn.metrics import classification_report
+from torch.nn import BCEWithLogitsLoss
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+from sklearn.metrics import classification_report as clf_rpt
 
 
-data_path = Path('/shared/datasets/Celeb-A/')
-device = torch.device('cuda:0')
+from model.vit import ViTConfig, ViTModel
+from data.celeb_utils import get_dataset, get_weights_for_loss
 
 
-tr_dataset = get_dataset(data_path, split='train')
-te_dataset = get_dataset(data_path, split='test')
-
-tr_dataloader = DataLoader(tr_dataset, batch_size=386, shuffle=True)
-te_dataloader = DataLoader(te_dataset, batch_size=4096, shuffle=True)
-
-config = ViTConfig()
-model = ViTModel(config).to(torch.bfloat16).to(device)
-optimizer = AdamW (model.parameters(), lr=5e-5)
-
-
-
-def eval(model, te_dataloader):
-    model.eval()
-
-    predictions = []
-    targets = []
-    losses = []
-
-    for images, target in te_dataloader:
-        images = images.to(torch.bfloat16).to(device)
-        target = target.to(torch.bfloat16).to(device)
-        with torch.no_grad():
-            logits, loss = model(images, target)
-        
-        preds = torch.sigmoid(logits.detach())
-        # correct = target == (probs > 0.5).to(torch.int64)
-        
-        predictions.append(preds.cpu().to(torch.float32).numpy())
-        losses.append(loss.detach().cpu().item())
-        targets.append(target.cpu().to(torch.float32).numpy())
-
-
-    predictions = np.vstack(predictions)
-    targets = np.vstack(targets)
-
-    report = classification_report(targets.ravel(), (predictions.ravel() > 0.5).astype(int), output_dict=True)
-    macro_avg = report['macro avg']
-    acc = report['accuracy']
-    log = f"P={macro_avg['precision']:.3f} R={macro_avg['recall']:.3f} F1={macro_avg['f1-score']:.3f} ACC={acc:.3f}, end=' '"
-    print(log)
-    return losses, report
-
-tr_losses = []
-te_losses = []
-
-#%%
-
-
-for ix, (images, labels) in enumerate(tr_dataloader):
-    model.train()
-    optimizer.zero_grad()
-    images = images.to(torch.bfloat16).to(device)
-    labels = labels.to(torch.bfloat16).to(device)
-
-    logits, loss = model(images, labels)
-    loss.backward()
-    optimizer.step()
-
-    if (ix % 10) == 0:
-        tr_loss = loss.detach().item()
-        print(ix, 'avg train loss:', tr_loss)
-        tr_losses.append(tr_loss)
+@dataclass
+class TrainingArgs:
+    dataset_path: Path = Path('/shared/datasets/Celeb-A/')
+    device: torch.device = torch.device('cuda:0')
+    dtype: torch.dtype = torch.bfloat16
+    chkpt_base_dir: Path = Path('runs/')
     
-    if (ix % 100) == 0:
-        losses, report = eval(model, te_dataloader)
+    train_batch_sz: int = 386
+    test_batch_sz: int = 4096
+
+    beta1: float = 0.9
+    beta2: float = 0.95
+    learning_rate: float = 1e-5
+    decay_lr: bool = True
+    min_lr: float = 1e-6
+    
+    max_iters: int = 5001
+    scale_class_weights: bool = True
+
+    model_cfg: ViTConfig = ViTConfig()
+    eval_only: bool = False # skip training loop
+    clf_thresh: float = 0.5
+
+    curr_iter: int = 1
+    log_interval: int = 10
+    eval_iterval: int = 100
+    best_model_stat: float = None
+    worse_report_counter: int = 0
+
+
+class Trainer:
+    def __init__(self, args: TrainingArgs = None, 
+                 checkpoint_path: Union[Path , str] = None,
+                 override_args: dict = {}):
+        '''
+        Either one of `args` or `checkpoint_path` must be provided.
+        
+        To initiate a new run, provide `args`.
+        To resume from checkpoint, provide `checkpoint_path`.
+
+        If both are provided, will resume from `checkpoint_path` by default.
+
+        To override arguments when resuming from checkpoints, 
+            provide a dictionary of arguments in `override_args`.
+        '''
+        self.chkpt_file_name = "model.th"
+        
+        if checkpoint_path is not None:
+            if self.checkpoint_exists(checkpoint_path):
+                self.checkpoint_path = Path(checkpoint_path)
+                self.load_checkpoint()
+                self.logger = self.create_logger()
+                self.logger.info(f"Load iter:{self.args.curr_iter} checkpoint successful.")
+                self._override_args(override_args)
+            else:
+                msg = 'Checkpoint not present at provided {checkpoint_path=}'
+                self.logger.error(msg)
+                raise ValueError(msg)
+        
+        elif args is not None:
+            self.args = args
+            self.checkpoint_path = self.create_checkpoint_dir()
+            self.logger = self.create_logger()
+            self.logger.info('checkpoint_path not provided. starting new run.')
+            self.model = self.init_model()
+        else:
+            raise ValueError('Expected either args or checkpoint_path')
+
+        if self.args.eval_only:
+            self.logger.info("eval_only is set to True.")
+            self.logger.info("trainloader, optimizer, scheduler won't init.")
+            self.te_dataloader = self.get_test_dataloader()
+        else:
+            self.tr_dataloader = self.get_train_dataloader()
+            self.te_dataloader = self.get_test_dataloader()
+            self.criterion = self.get_loss_fn()
+            self.optimizer = self.get_optimizer()
+            self.scheduler = self.get_scheduler()
+            self.logger.info("All initializations complete.")
+
+    def train(self):
+        self.logger.info(f"Resuming training from iter={self.args.curr_iter}")
+        for itern in range(self.args.curr_iter, self.args.max_iters):
+            self.args.curr_iter = itern
+            
+            images, labels = next(iter(self.tr_dataloader))
+            
+            self.model.train()
+            self.optimizer.zero_grad()
+            
+            images = images.to(self.args.dtype).to(self.args.device)
+            labels = labels.to(self.args.dtype).to(self.args.device)
+
+            logits = self.model(images, labels)
+            loss = self.compute_loss(logits, labels)
+
+            loss.backward()
+            self.optimizer.step()
+            # self.scheduler.step()
+
+            if (itern % self.args.log_interval) == 0:
+                tr_loss = loss.detach().item()
+                self.logger.info(f"{itern=} {tr_loss=}")
+            
+            if (itern % self.args.eval_iterval) == 0:
+                self.logger.info(f"Running evaluation at {itern=}...")
+                report = self.evaluate()
+                self.logger.info(str(report))
+            
+                self.checkpoint_logic(report)
+      
+    def checkpoint_logic(self, current_report):
+        '''
+        makes decision for:
+        - checkpoint model at current iteration
+        - skip checkpointing
+        - stop training.
+        using the current evaluation report.
+        '''
+        if self.args.best_model_stat == None:
+            self.logger.info('Updated best model. best_model_stat empty.')
+            self.args.best_model_stat = current_report['F1']
+            self.args.worse_report_counter = 0
+            self.save_checkpoint()
+        
+        if current_report['F1'] >= self.args.best_model_stat:
+            self.logger.info('Updating best model as F1 improved.')
+            self.args.best_model_stat = current_report['F1']
+            self.args.worse_report_counter = 0
+            self.save_checkpoint()
+        else:
+            self.args.worse_report_counter += 1
+            self.logger.info(F"Updated {self.args.worse_report_counter=}")
+        
+        if self.args.worse_report_counter > 2:
+            self.logger.info(F"evaluation worse over multiple successive runs.")
+            self.logger.info(F"Abort Training at {self.args.curr_iter=}")
+            sys.exit()
+            
+    def save_checkpoint(self):
+        chkpt = dict(
+            args = self.args,
+            model = self.model.state_dict()
+        )
+        filename = self.checkpoint_path / self.chkpt_file_name
+        torch.save(chkpt, filename)
+        self.logger.info(f"Saved checkpoint at {filename}")
+
+    def load_checkpoint(self, ):
+        chkpt = torch.load(self.checkpoint_path / self.chkpt_file_name)
+        self.args = chkpt['args']
+        self.model = ViTModel(self.args.model_cfg)
+        self.model.load_state_dict(chkpt['model'])
+        self.model.to(self.args.dtype).to(self.args.device)
+        
+    def evaluate(self):
+        '''
+        Runs an evaluation loop over the provided dataloader
+        Returns a dictionary of metrics.
+        '''
+        self.model.eval()
+        predictions = []
+        targets = []
+        losses = []
+        tick = perf_counter()
+        for images, target in self.te_dataloader:
+            images = images.to(self.args.dtype).to(self.args.device)
+            target = target.to(self.args.dtype).to(self.args.device)
+            with torch.no_grad():
+                logits = self.model(images, target)
+                if not self.args.eval_only:
+                    te_loss = self.compute_loss(logits, target).detach().cpu().item()
+                else:
+                    te_loss = 0.0
+        
+            preds = torch.sigmoid(logits.detach())
+            predictions.append(preds.cpu().to(torch.float32).numpy())
+            targets.append(target.cpu().to(torch.float32).numpy())
+            losses.append(te_loss)
+        tock = perf_counter() - tick
+        
+        targets = np.vstack(targets)
+        predictions = np.vstack(predictions)
         avg_loss = sum(losses) / len(losses)
-        te_losses.append(avg_loss)
-        print('LOSS:', avg_loss)
-        print()
 
- #%%        
+        report = clf_rpt(targets.ravel(), 
+                         (predictions.ravel() > self.args.clf_thresh).astype(int),
+                         output_dict=True)
+        
+        return dict(precision = round(report['macro avg']['precision'], 3),
+                    recall = round(report['macro avg']['recall'], 3),
+                    F1 = round(report['macro avg']['f1-score'], 3),
+                    accuracy = round(report['accuracy'], 3),
+                    elapsed = round(tock, 3),
+                    loss = round(avg_loss, 3)
+                    )
 
-#%%
+    def get_scheduler(self):
+        # TODO: do this.
+        return None
+    
+    def get_optimizer(self):
+        return AdamW(self.model.parameters(),
+                     lr=self.args.learning_rate,
+                     betas=(self.args.beta1, self.args.beta2)
+                     )
+
+    def checkpoint_exists(self, path: Union[Path , str]):
+        chkpt_file = Path(path) / self.chkpt_file_name
+        return os.path.exists(chkpt_file)
+
+    def _override_args(self, override_args: dict):
+        # inplace update self.args with entries in override_args/
+        self.args.__dict__.update(override_args)
+      
+    def get_train_dataloader(self):
+        tr_dataset = get_dataset(self.args.dataset_path, split='train')
+        tr_dataloader = DataLoader(tr_dataset, 
+                                   batch_size=self.args.train_batch_sz, 
+                                   shuffle=True)
+        return tr_dataloader
+
+    def get_test_dataloader(self):
+        te_dataset = get_dataset(self.args.dataset_path, split='test')
+        te_dataloader = DataLoader(te_dataset,
+                                   batch_size=self.args.test_batch_sz, 
+                                   shuffle=False)
+        return te_dataloader
+
+    def get_loss_fn(self):
+        if self.args.scale_class_weights:
+            class_weights = get_weights_for_loss(self.tr_dataloader.dataset.attrib_df)
+            pos_weight=torch.tensor(class_weights).to(self.args.device)
+        else:
+            pos_weight=torch.ones([self.cfg.n_class]).to(self.args.device)
+        return BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    def init_model(self):
+        return ViTModel(self.args.model_cfg).\
+            to(self.args.dtype).\
+            to(self.args.device)
+
+    def compute_loss(self, logit, target):
+        return self.criterion(logit, target)
+    
+    def create_checkpoint_dir(self):
+        chkpt_name = datetime.now().strftime("%y%m%d-%H%M")
+        chkpt_name = Path(self.args.chkpt_base_dir) / chkpt_name
+        os.makedirs(chkpt_name, exist_ok=True)
+        return chkpt_name
+    
+    def create_logger(self):
+        logger = logging.getLogger()
+        logger.setLevel(logging.INFO)
+
+        # Create handlers
+        c_handler = logging.StreamHandler()
+        f_handler = logging.FileHandler(self.checkpoint_path / 'logs.log')
+        c_handler.setLevel(logging.INFO)
+        f_handler.setLevel(logging.INFO)
+        
+        # Create formatters and add it to handlers
+        c_format = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
+        f_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        c_handler.setFormatter(c_format)
+        f_handler.setFormatter(f_format)
+        
+        # Add handlers to the logger
+        logger.addHandler(c_handler)
+        logger.addHandler(f_handler)
+
+        return logger
 
 
 
 
 
+args = TrainingArgs()
+
+trainer = Trainer(args=args)
+
+trainer.train()
+
+"""
+# TODO:
+write scheduler.
+integrate tensorboard.
+optional:
+    gradient accumulation
+    gradient checkpointing
+"""
 
 
-# %%
+

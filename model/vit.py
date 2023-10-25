@@ -1,4 +1,3 @@
-#%%
 
 import torch
 from torch import nn
@@ -35,7 +34,8 @@ class PatchEmbedding(nn.Module):
         
         self.cfg = cfg
         
-        # pos_emb = torch.arange(cfg.num_patches + 1).view(1, -1 , 1) / (cfg.num_patches + 1)
+        # pos_emb = torch.arange(cfg.num_patches + 1).view(1, -1 , 1)\
+        #  / (cfg.num_patches + 1)
         self.pos_emb = nn.Parameter(torch.randn(1, self.cfg.num_patches + 1, 1))
 
         # cls_token shape: [batch x 1 x model_dim] # make learnable
@@ -83,12 +83,10 @@ class ViTModel(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.patchEmbeddings = PatchEmbedding(self.cfg)
-        self.transformer = nn.ModuleList([self.get_encoder_blk() for _ in range(self.cfg.n_layer)])
+        self.transformer = nn.ModuleList([self.get_encoder_blk() \
+                                          for _ in range(self.cfg.n_layer)])
         self.mlp_head = nn.Linear(self.cfg.model_dim, self.cfg.n_class)
         
-        # TODO: add class weight from config
-        self.criterion = nn.BCEWithLogitsLoss(torch.ones([self.cfg.n_class]))
-
     def get_encoder_blk(self):
         return torch.nn.TransformerEncoderLayer(
             d_model = self.cfg.model_dim,
@@ -97,7 +95,7 @@ class ViTModel(nn.Module):
             dropout = self.cfg.dropout,
             batch_first = self.cfg.batch_first,
             norm_first = self.cfg.norm_first,
-            layer_norm_eps = self.cfg.layer_norm_eps,   
+            layer_norm_eps = self.cfg.layer_norm_eps,
             bias = self.cfg.bias
             )
 
@@ -106,15 +104,8 @@ class ViTModel(nn.Module):
         for block in self.transformer:
             x = block(x, is_causal=False)
         logits = self.mlp_head(x[:, 0, :]) # only 0th <class> token.
-        if targets is not None:
-            loss = self.criterion(logits, targets)
-            return logits, loss
-        else:
-            return logits
+        return logits
     
     def get_num_params(self):
         n_params = sum(p.numel() for p in self.parameters())
         return f"{n_params // 1024 // 1024}M"
-
-    def loss(self, logit, target):
-        return self.criterion(logit, target)
