@@ -1,6 +1,4 @@
 
-#%%
-
 import os
 import sys
 import logging
@@ -11,13 +9,14 @@ from time import perf_counter
 from datetime import datetime
 from dataclasses import dataclass
 
+import fire
 import torch
 from torch.optim import AdamW
 from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from sklearn.metrics import classification_report as clf_rpt
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from sklearn.metrics import classification_report as clf_rpt
 
 from model.vit import ViTConfig, ViTModel
 from data.celeb_utils import get_dataset, get_weights_for_loss
@@ -25,12 +24,12 @@ from data.celeb_utils import get_dataset, get_weights_for_loss
 
 @dataclass
 class TrainingArgs:
-    dataset_path: Path = Path('/shared/datasets/Celeb-A/')
+    dataset_path: Path = None
     device: torch.device = torch.device('cuda:0')
     dtype: torch.dtype = torch.float32
     chkpt_base_dir: Path = Path('runs/')
     
-    train_batch_sz: int = 256
+    train_batch_sz: int = 384
     test_batch_sz: int = 3072
 
     beta1: float = 0.9
@@ -81,8 +80,11 @@ class Trainer:
         elif args is not None:
             self.args = args
             self.checkpoint_path = self.create_checkpoint_dir()
+            
             self.logger = self.create_logger()
             self.logger.info('checkpoint_path not provided. starting new run.')
+            self.logger.info('dumping args...')
+            self.logger.info(str(self.args.__dict__))
 
             self.model = self.init_model()
             self.optimizer = self.get_optimizer()
@@ -117,9 +119,9 @@ class Trainer:
             self.optimizer.step()
             self.scheduler.step()
 
-            self.writer.add_scalar('train_loss', loss.detach().item(), itern)
-            self.writer.add_scalar('learning_rate', self.optimizer.param_groups[0]['lr'], itern)
-            
+            self.write_tensorboard(dict(
+                train_loss=loss.detach().item(),
+                learning_rate=self.optimizer.param_groups[0]['lr']))
 
             if (itern % self.args.log_interval) == 0:
                 tr_loss = loss.detach().item()
@@ -128,10 +130,10 @@ class Trainer:
             if (itern % self.args.eval_iterval) == 0:
                 self.logger.info(f"Running evaluation at {itern=}...")
                 report = self.evaluate()
-                self.writer.add_scalar('test_loss', report['loss'], itern)
+                self.write_tensorboard(report)
                 self.logger.info(str(report))
                 self.checkpoint_logic(report)
-      
+
     def checkpoint_logic(self, current_report):
         '''
         makes decision for:
@@ -303,16 +305,66 @@ class Trainer:
 
         return logger
 
+    def write_tensorboard(self, report: dict):
+        for key in report.keys():
+            self.writer.add_scalar(key, report[key], self.args.curr_iter)
+            
+            
+def main(    
+        dataset_path,
+        checkpoint_path = None,
+        train = True,
+        eval = True,
+        device = 'cuda',
+        dtype = 'fp32', # fp32, bf16,
+        chkpt_base_dir = 'runs/',
+        train_batch_sz = 384,
+        test_batch_sz = 3072,
+        max_iters = 4001,
+        log_interval = 10,
+        eval_iterval = 150,
+):
+    if dtype == 'fp32':
+        dtype = torch.float32
+    elif dtype == 'bf16':
+        dtype = torch.bfloat16
+    else:
+        raise ValueError('Expected type to be one of `fp32` or `bf16`.')
+    
+    checkpoint_path = checkpoint_path
+    if checkpoint_path is not None:
+        override_args=dict(
+            dataset_path = dataset_path,
+            device = torch.device(device),
+            dtype = dtype,
+            chkpt_base_dir = Path(chkpt_base_dir),
+            train_batch_sz = train_batch_sz,
+            test_batch_sz = test_batch_sz,
+            max_iters = max_iters,
+            log_interval = log_interval,
+            eval_iterval = eval_iterval
+            )
+        trainer = Trainer(checkpoint_path=checkpoint_path,
+                          override_args=override_args)
+    else:
+        args = TrainingArgs()
+        args.dataset_path = Path(dataset_path)
+        args.device = torch.device(device)
+        args.dtype = dtype
+        args.chkpt_base_dir = Path(chkpt_base_dir)
+        args.train_batch_sz = train_batch_sz
+        args.test_batch_sz = test_batch_sz
+        args.max_iters = max_iters
+        args.log_interval = log_interval
+        args.eval_iterval = eval_iterval
+
+        trainer = Trainer(args)
+    
+    if train:
+        trainer.train()
+    if eval:
+        trainer.eval()
 
 
-
-args = TrainingArgs()
-trainer = Trainer(args=args)
-
-
-# trainer = Trainer(checkpoint_path='/shared/CO/arpytanshu_/celeb-vae/runs/231026-1723')
-
-trainer.train()
-
-
-# %%
+if __name__ == '__main__':
+    fire.Fire(main)
