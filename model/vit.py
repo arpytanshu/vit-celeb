@@ -36,7 +36,7 @@ class PatchEmbedding(nn.Module):
         
         # pos_emb = torch.arange(cfg.num_patches + 1).view(1, -1 , 1)\
         #  / (cfg.num_patches + 1)
-        self.pos_emb = nn.Parameter(torch.randn(1, self.cfg.num_patches + 1, 1))
+        self.pos_emb = nn.Parameter(torch.randn(1, self.cfg.num_patches + 1, ViTConfig.model_dim))
 
         # cls_token shape: [batch x 1 x model_dim] # make learnable
         self.cls_token = nn.Parameter(torch.rand((1, 1, ViTConfig.model_dim)))

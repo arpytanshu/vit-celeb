@@ -320,7 +320,7 @@ def main(
         chkpt_base_dir = 'runs/',
         train_batch_sz = 384,
         test_batch_sz = 3072,
-        max_iters = 4001,
+        max_iters = 5001,
         log_interval = 10,
         eval_iterval = 150,
 ):
@@ -363,7 +363,7 @@ def main(
     if train:
         trainer.train()
     if eval:
-        trainer.eval()
+        trainer.evaluate()
 
 
 if __name__ == '__main__':
