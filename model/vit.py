@@ -20,7 +20,7 @@ class ViTConfig:
     mlp_dim: int = 2048
     n_head: int = 8
 
-    dropout: float = 0.1
+    dropout: float = 0.15
     batch_first: bool = True
     norm_first: bool = True
     layer_norm_eps: float = 1e-5
@@ -34,7 +34,7 @@ class PatchEmbedding(nn.Module):
         
         self.cfg = cfg
         
-        # pos_emb = torch.arange(cfg.num_patches + 1).view(1, -1 , 1)\
+        # pos_emb = torch.arange(cfg.num_patches + 1).view(1, -1 , ViTConfig.model_dim)\
         #  / (cfg.num_patches + 1)
         self.pos_emb = nn.Parameter(torch.randn(1, self.cfg.num_patches + 1, ViTConfig.model_dim))
 
@@ -44,6 +44,9 @@ class PatchEmbedding(nn.Module):
         # project flattened patches of patch_dim to model_dim
         patch_dim = self.cfg.patch_sz[0] * self.cfg.patch_sz[1] * self.cfg.input_C
         self.linear_proj = nn.Linear(patch_dim, self.cfg.model_dim)
+
+        # dropout
+        self.dropout = nn.dropout(self.cfg.dropout)
     
 
     def forward(self, input):
@@ -65,15 +68,18 @@ class PatchEmbedding(nn.Module):
                 .flatten(1, 2)\
                 .flatten(2, 4)
 
-        # Linear Projection of Flattened Patches
+        # Linear Projection of Flattened Patches [b,np,pd] -> [b,np,md]
+        # md is model_dim
         input = self.linear_proj(input)
 
-        # concat cls_token + patch_embeddings [b,np,pd] -> [b,np+1,pd]
+        # concat cls_token + patch_embeddings [b,np,md] -> [b,np+1,md]
+        # along sequence dimension
         cls_token = self.cls_token.repeat(batch_sz, 1, 1)
         input = torch.cat([cls_token, input], dim=1)
 
-        # add position embedding [b,np+1,pd]
+        # add position embedding [b,np+1,md]
         output = input + self.pos_emb
+        output = self.dropout(output)
 
         return output
 

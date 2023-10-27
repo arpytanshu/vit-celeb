@@ -144,14 +144,14 @@ class Trainer:
         '''
         if self.args.best_model_stat == None:
             self.logger.info('Updated best model. best_model_stat empty.')
-            self.args.best_model_stat = current_report['loss']
+            self.args.best_model_stat = current_report['eval_loss']
             self.args.worse_report_counter = 0
             self.save_checkpoint()
-        elif self.args.best_model_stat > current_report['loss']:
+        elif self.args.best_model_stat > current_report['eval_loss']:
             self.logger.info('Updating best model.')
             self.logger.info('loss improved from {} to {}'.format(
-                self.args.best_model_stat, current_report['loss']))
-            self.args.best_model_stat = current_report['loss']
+                self.args.best_model_stat, current_report['eval_loss']))
+            self.args.best_model_stat = current_report['eval_loss']
             self.args.worse_report_counter = 0
             self.save_checkpoint()
         else:
@@ -223,7 +223,7 @@ class Trainer:
                     F1 = round(report['macro avg']['f1-score'], 3),
                     accuracy = round(report['accuracy'], 3),
                     elapsed = round(tock, 3),
-                    loss = round(avg_loss, 3)
+                    eval_loss = round(avg_loss, 3)
                     )
 
     def get_scheduler(self):
