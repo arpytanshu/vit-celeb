@@ -31,4 +31,17 @@ commit id: `47ce940afb38a6c539639f782b67012ad9e1c5bf`
     ...
     ```
 
-- initialized positional embeddings with 0 made all the difference.
+- initialized positional embeddings with 0 made all the difference.  
+started getting images of faces in pe cosine similarity plots.  
+commit id: `339fbbaf80e7e152fe9a59dde67a147fbfc500c4`  
+    ```
+    2023-10-28 00:04:16,167 - root - INFO - itern=3750 tr_loss=0.49622440338134766
+    2023-10-28 00:04:16,167 - root - INFO - Running evaluation at itern=3750...
+    2023-10-28 00:04:38,486 - root - INFO - {'precision': 0.771, 'recall': 0.838, 'F1': 0.791, 'accuracy': 0.831, 'elapsed': 21.558, 'eval_loss': 0.542}
+    2023-10-28 00:04:44,428 - root - INFO - Updating best model.
+    2023-10-28 00:04:44,428 - root - INFO - loss improved from 0.544 to 0.542
+    2023-10-28 00:04:45,145 - root - INFO - Saved checkpoint at runs/231027-2310/model.th
+    ```
+
+- increased dropout
+    `python trainer.py --dataset_path /shared/datasets/Celeb-A/ --eval_interval 200 --plot_interval 50 --dropout 0.2`

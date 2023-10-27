@@ -46,6 +46,7 @@ class TrainingArgs:
     curr_iter: int = 1
     log_interval: int = 10
     eval_iterval: int = 150
+    plot_interval: int = 50
     best_model_stat: float = None
     worse_report_counter: int = 0
 
@@ -134,12 +135,13 @@ class Trainer:
                 report = self.evaluate()
                 self.write_tensorboard(report)
                 self.logger.info(str(report))
-
-                if self.args.save_plots:
-                    pe_filename = self.checkpoint_path / "plots" / f"pe_sim_{itern}.png"
-                    self.model.get_pe_similarity_plot(f"iter:{itern}").savefig(pe_filename)
-
+                
                 self.checkpoint_logic(report)
+
+            if (itern % self.args.plot_interval) == 0:
+                pe_filename = self.checkpoint_path / "plots" / f"pe_sim_{itern}.png"
+                self.model.get_pe_similarity_plot(f"iter:{itern}").savefig(pe_filename)
+
 
 
     def checkpoint_logic(self, current_report):
@@ -335,6 +337,7 @@ def main(
         max_iters = 5001,
         log_interval = 10,
         eval_iterval = 150,
+        plot_interval = 150
 ):
     if dtype == 'fp32':
         dtype = torch.float32
@@ -354,7 +357,8 @@ def main(
             test_batch_sz = test_batch_sz,
             max_iters = max_iters,
             log_interval = log_interval,
-            eval_iterval = eval_iterval
+            eval_iterval = eval_iterval,
+            plot_interval = plot_interval
             )
         trainer = Trainer(checkpoint_path=checkpoint_path,
                           override_args=override_args)
@@ -369,6 +373,7 @@ def main(
         args.max_iters = max_iters
         args.log_interval = log_interval
         args.eval_iterval = eval_iterval
+        args.plot_interval = plot_interval
 
         trainer = Trainer(args)
     
