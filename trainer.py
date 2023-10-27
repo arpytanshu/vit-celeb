@@ -49,6 +49,8 @@ class TrainingArgs:
     best_model_stat: float = None
     worse_report_counter: int = 0
 
+    save_plots: bool = True
+
 
 class Trainer:
     def __init__(self, args: TrainingArgs = None, 
@@ -132,7 +134,13 @@ class Trainer:
                 report = self.evaluate()
                 self.write_tensorboard(report)
                 self.logger.info(str(report))
+
+                if self.args.save_plots:
+                    pe_filename = self.checkpoint_path / "plots" / f"pe_sim_{itern}.png"
+                    self.model.get_pe_similarity_plot(f"iter:{itern}").savefig(pe_filename)
+
                 self.checkpoint_logic(report)
+
 
     def checkpoint_logic(self, current_report):
         '''
@@ -278,9 +286,13 @@ class Trainer:
         return self.criterion(logit, target)
     
     def create_checkpoint_dir(self):
+        # create a dir w/ current date-time inside the base dir.
         chkpt_name = datetime.now().strftime("%y%m%d-%H%M")
         chkpt_name = Path(self.args.chkpt_base_dir) / chkpt_name
         os.makedirs(chkpt_name, exist_ok=True)
+        # create a plots dir inside the base dir
+        plots_dir = chkpt_name / "plots"
+        os.makedirs(plots_dir, exist_ok=True)
         return chkpt_name
     
     def create_logger(self):

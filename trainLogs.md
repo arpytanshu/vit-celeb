@@ -26,7 +26,9 @@ overfitting???
 
 - implemented dropout in patchEmbedding module.  
 updated default dropout from 0.1 to 0.15, (possible will allow to train for longer w/o OF.)  
-commit id: ``
+commit id: `47ce940afb38a6c539639f782b67012ad9e1c5bf`
     ```
     ...
     ```
+
+- initialized positional embeddings with 0 made all the difference.

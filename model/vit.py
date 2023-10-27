@@ -1,9 +1,13 @@
 
-import torch
-from torch import nn
-
-from dataclasses import dataclass
 from typing import Tuple, List
+from dataclasses import dataclass
+
+import torch
+import numpy as np
+from torch import nn
+import matplotlib.pyplot as plt
+from torch.nn import CosineSimilarity
+
 
 @dataclass
 class ViTConfig:
@@ -12,7 +16,9 @@ class ViTConfig:
     input_C: int = 3
     
     patch_sz: Tuple[int] = (16, 16)
-    num_patches: int = (input_W // patch_sz[0]) * (input_H // patch_sz[1])
+    n_patches_x = (input_W // patch_sz[0])
+    n_patches_y = (input_H // patch_sz[1])
+    num_patches: int = n_patches_x * n_patches_y
 
     # ViT-Base
     n_layer: int = 8
@@ -36,7 +42,7 @@ class PatchEmbedding(nn.Module):
         
         # pos_emb = torch.arange(cfg.num_patches + 1).view(1, -1 , ViTConfig.model_dim)\
         #  / (cfg.num_patches + 1)
-        self.pos_emb = nn.Parameter(torch.randn(1, self.cfg.num_patches + 1, ViTConfig.model_dim))
+        self.pos_emb = nn.Parameter(torch.zeros(1, self.cfg.num_patches + 1, ViTConfig.model_dim))
 
         # cls_token shape: [batch x 1 x model_dim] # make learnable
         self.cls_token = nn.Parameter(torch.rand((1, 1, ViTConfig.model_dim)))
@@ -46,7 +52,7 @@ class PatchEmbedding(nn.Module):
         self.linear_proj = nn.Linear(patch_dim, self.cfg.model_dim)
 
         # dropout
-        self.dropout = nn.dropout(self.cfg.dropout)
+        self.dropout = nn.Dropout(self.cfg.dropout)
     
 
     def forward(self, input):
@@ -115,3 +121,38 @@ class ViTModel(nn.Module):
     def get_num_params(self):
         n_params = sum(p.numel() for p in self.parameters())
         return f"{n_params // 1024 // 1024}M"
+
+    def get_pe_similarity_plot(self, title=''):
+        pe = self.patchEmbeddings.state_dict()['pos_emb'].squeeze()
+        cs = CosineSimilarity(dim=1)
+        pe = pe[1:, :] # remove position enbedding for class_token
+        stacked = []
+        
+        for ix in range(pe.shape[0]):
+            stacked.append(cs(pe[ix, :].view(1, -1), pe[:, :])\
+                .view(self.cfg.n_patches_y, self.cfg.n_patches_x))
+        stacked = torch.stack(stacked).cpu().numpy()
+
+        fig, axs = plt.subplots(self.cfg.n_patches_y, 
+                                self.cfg.n_patches_x, 
+                                figsize=(14,17),
+                                sharex=True, 
+                                sharey=True)
+        fig.suptitle(title)
+        fig.tight_layout()
+        
+        ix = 0
+        for row_ix in range(axs.shape[0]):
+            for col_ix in range(axs.shape[1]):
+                ax = axs[row_ix][col_ix]
+                cos_sim = stacked[ix]
+                # cos_sim[row_ix][col_ix] = np.median(cos_sim)
+                ax.imshow(cos_sim)
+                ix -=- 1
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.spines['bottom'].set_visible(False)
+                ax.spines['left'].set_visible(False)
+        
+        plt.close(fig)
+        return fig
